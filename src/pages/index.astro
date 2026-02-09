@@ -1,0 +1,24 @@
+---
+import AppCloud from '../components/AppCloud.jsx';
+
+// ATENÇÃO CRÍTICA:
+// Por enquanto, estamos hardcoding este ID para testar a migração.
+// No futuro, isso virá de: const { userId } = auth();
+const TEMP_USER_ID = "admin_pedro_hormung";
+---
+
+<html lang="pt-BR">
+	<head>
+		<meta charset="utf-8" />
+		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+		<meta name="viewport" content="width=device-width" />
+		<meta name="generator" content={Astro.generator} />
+		<title>Hormung Cloud V16</title>
+	</head>
+	<body class="bg-slate-950">
+		<!-- Carrega o App React apenas no cliente (client:only) -->
+		<AppCloud client:only="react" userId={TEMP_USER_ID} />
+	</body>
+</html>
+
+
