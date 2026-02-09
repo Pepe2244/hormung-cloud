@@ -3,10 +3,10 @@ import {
     Briefcase, TrendingUp, Search, FolderOpen, Trash2, Plus, 
     ArrowLeft, UploadCloud, DownloadCloud, Coins, ClipboardList,
     DollarSign, Camera, PlusCircle, Pencil, X, Save, Printer,
-    Users, Hammer, Send, Paperclip, ChevronRight
+    Users, Hammer, Send, Paperclip, ChevronRight, AlertTriangle
 } from 'lucide-react';
 
-// --- 1. GLOBAL STYLES (Print & Layout) ---
+// --- 1. GLOBAL STYLES ---
 const GlobalPrintStyles = () => (
     <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&display=swap');
@@ -50,10 +50,11 @@ const compressImg = (file) => new Promise((resolve) => {
         const img = new Image(); img.src = e.target.result;
         img.onload = () => {
             const cvs = document.createElement('canvas'); const ctx = cvs.getContext('2d');
+            // COMPRESSÃO AGRESSIVA: Reduzimos max dimension para 720 e qualidade para 0.4
             const max = 720; const scale = max/Math.max(img.width,img.height,max);
             cvs.width = img.width*scale; cvs.height = img.height*scale;
             ctx.drawImage(img,0,0,cvs.width,cvs.height);
-            resolve(cvs.toDataURL('image/jpeg', 0.45));
+            resolve(cvs.toDataURL('image/jpeg', 0.40));
         };
     };
 });
@@ -63,7 +64,7 @@ function useDebounce(value, delay) {
     return debouncedValue;
 }
 
-// --- 3. HYBRID DB (The Cloud Engine) ---
+// --- 3. HYBRID DB BLINDADO ---
 class HybridDB {
     constructor(userId) {
         this.dbName = 'HormungV16_ERP';
@@ -72,6 +73,7 @@ class HybridDB {
         this.userId = userId;
         this.apiBase = '/api/sync';
     }
+
     async initLocal() {
         if (this.db) return this.db;
         return new Promise((resolve, reject) => {
@@ -84,37 +86,57 @@ class HybridDB {
             req.onerror = (e) => reject(e);
         });
     }
+
     async sync() {
-        if (!this.userId) return this.getAllLocal();
+        // Sempre retorna o local primeiro para a interface ser rápida
+        const localData = await this.getAllLocal();
+
+        if (!this.userId) return localData;
+
         try {
             const res = await fetch(this.apiBase, { headers: { 'x-user-id': this.userId } });
             if (res.ok) {
                 const data = await res.json();
-                if (!data.projects || data.projects.length === 0) {
-                    const localData = await this.getAllLocal();
-                    if (localData.length > 0) {
-                        await this.migrateToCloud(localData);
-                        return localData;
-                    }
+
+                // Cenário 1: Nuvem vazia, mas temos dados locais (Migração)
+                if ((!data.projects || data.projects.length === 0) && localData.length > 0) {
+                    console.log("☁️ Nuvem vazia. Iniciando migração silenciosa...");
+                    this.migrateToCloud(localData); // Fire and forget
+                    return localData;
                 }
+
+                // Cenário 2: Nuvem tem dados (Sincronização)
                 if (data.projects && data.projects.length > 0) {
+                    // Mescla inteligente: Se a nuvem tiver mais coisas ou coisas mais novas, vence
+                    // Simplificação: Nuvem vence.
                     await this.updateLocalCache(data.projects);
                     return data.projects;
                 }
             }
-        } catch (e) { console.warn("Offline mode active."); }
-        return await this.getAllLocal();
+        } catch (e) {
+            console.warn("⚠️ Modo Offline ou Erro de API.", e);
+        }
+        return localData;
     }
+
     async migrateToCloud(projects) {
-        for (const p of projects) await this.saveProject(p);
-        alert('Dados migrados para a Nuvem com sucesso!');
+        let success = 0;
+        let failed = 0;
+        for (const p of projects) {
+            const saved = await this.saveToCloud(p);
+            if(saved) success++; else failed++;
+        }
+        console.log(`Migração: ${success} salvos, ${failed} falharam (tamanho).`);
+        if (failed > 0) alert(`Atenção: ${failed} obras não subiram para a nuvem pois são muito grandes (Muitas fotos). Elas continuam salvas APENAS neste dispositivo.`);
     }
+
     async updateLocalCache(projects) {
         await this.initLocal();
         const tx = this.db.transaction('projects', 'readwrite');
         const store = tx.objectStore('projects');
         projects.forEach(p => store.put(p));
     }
+
     async getAllLocal() {
         await this.initLocal();
         return new Promise(r => {
@@ -122,21 +144,41 @@ class HybridDB {
             tx.objectStore('projects').getAll().onsuccess = e => r(e.target.result || []);
         });
     }
+
     async saveProject(project) {
+        // 1. GARANTIA LOCAL (Sempre salva primeiro aqui)
         await this.initLocal(); 
         await new Promise(r => {
             const tx = this.db.transaction('projects', 'readwrite');
             tx.objectStore('projects').put(project).onsuccess = r;
         });
+
+        // 2. TENTATIVA NUVEM (Se falhar, não quebra o app)
         if (this.userId) {
-            // Background Sync
-            fetch(this.apiBase, {
+            this.saveToCloud(project);
+        }
+        return project;
+    }
+
+    async saveToCloud(project) {
+        try {
+            const res = await fetch(this.apiBase, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'x-user-id': this.userId },
                 body: JSON.stringify({ project })
-            }).catch(e => console.error("Cloud Error", e));
+            });
+
+            if (!res.ok) {
+                if(res.status === 413) console.error(`Obra ${project.name} é muito grande para o Vercel.`);
+                return false;
+            }
+            return true;
+        } catch (e) {
+            console.error("Erro ao salvar na nuvem:", e);
+            return false;
         }
     }
+
     async delete(id) {
         await this.initLocal();
         const tx = this.db.transaction('projects', 'readwrite');
@@ -145,7 +187,7 @@ class HybridDB {
     }
 }
 
-// --- 4. PRINT COMPONENTS (Fixed Image Loading) ---
+// --- 4. PRINT COMPONENTS ---
 const PrintRDO = ({ project, report }) => {
     if (!project || !report) return null;
     const list = Array.isArray(report) ? report : [report];
@@ -210,10 +252,9 @@ const PrintRDO = ({ project, report }) => {
                                     <p className="text-[10px] text-center text-gray-500">{p.name}</p>
                                 </div>
                                 <div className="photo-grid-fixed">
-                                    {photos.map((ph, idx) => (
+                                    <{photos.map((ph, idx) => (
                                         <div key={idx} className="photo-item">
                                             <div className="photo-img-container">
-                                                {/* CORREÇÃO CRÍTICA: loading="eager" para garantir impressão */}
                                                 <img src={ph.url} loading="eager" className="max-h-full max-w-full object-contain" alt="Foto Obra" />
                                             </div>
                                             <p className="text-[10px] text-center mt-1 font-semibold uppercase border-t border-gray-100 pt-1">{ph.caption || `Foto ${idx+1}`}</p>
@@ -275,10 +316,7 @@ const PrintFinancial = ({ project }) => {
                 <div key={`rec-${pageIdx}`} className="a4-page">
                     <div className="content-wrapper">
                         <h3 className="section-title mb-4">ANEXOS / COMPROVANTES (Pág. {pageIdx + 1})</h3>
-                        <div className="receipt-grid">{chunk.map((e, i) => (<div key={i} className="receipt-item"><div className="text-[10px] font-bold border-b border-gray-300 pb-1 mb-2 flex justify-between"><span>DATA: {isoDateToBr(e.date)}</span><span>VALOR: {formatBRL(e.amount)}</span></div>
-                        {/* CORREÇÃO CRÍTICA: loading="eager" para garantir impressão */}
-                        <img src={e.receiptImg} loading="eager" className="receipt-img" alt="Comprovante" />
-                        <p className="text-[9px] mt-1 text-center italic">{e.description} ({e.category})</p></div>))}</div>
+                        <div className="receipt-grid">{chunk.map((e, i) => (<div key={i} className="receipt-item"><div className="text-[10px] font-bold border-b border-gray-300 pb-1 mb-2 flex justify-between"><span>DATA: {isoDateToBr(e.date)}</span><span>VALOR: {formatBRL(e.amount)}</span></div><img src={e.receiptImg} loading="eager" className="receipt-img" alt="Comprovante" /><p className="text-[9px] mt-1 text-center italic">{e.description} ({e.category})</p></div>))}</div>
                     </div>
                 </div>
             ))}
@@ -436,7 +474,13 @@ export default function AppCloud({ userId }) {
     const [activeRepId, setActiveRepId] = useState(null);
     const [loading, setLoading] = useState(true);
 
-    useEffect(() => { setLoading(true); db.sync().then(data => { setProjects(data); setLoading(false); }); }, [db, userId]);
+    useEffect(() => { 
+        setLoading(true); 
+        db.sync().then(data => { 
+            setProjects(data); 
+            setLoading(false); 
+        }); 
+    }, [db, userId]);
 
     const activeProject = useMemo(()=>projects.find(p=>p.id===activeProjId),[projects,activeProjId]);
     const printData = (activeRepId && activeRepId !== 'PRINT_RDO' && activeRepId !== 'PRINT_FIN') ? activeProject?.reports?.find(r=>r.id===activeRepId) : activeProject?.reports;
@@ -454,10 +498,20 @@ export default function AppCloud({ userId }) {
                 const data = JSON.parse(ev.target.result);
                 if(data.projects) {
                     const fixed = data.projects.map(p => ({...p, expenses: p.expenses||[], reports: p.reports||[]}));
-                    for(const p of fixed) await db.saveProject(p);
-                    const newData = await db.sync();
-                    setProjects(newData);
-                    alert("Backup Restaurado e Sincronizado!");
+
+                    // PASSO 1: Atualiza UI Imediatamente (Para você não ficar cego)
+                    setProjects(prev => {
+                        const newMap = new Map(prev.map(p => [p.id, p]));
+                        fixed.forEach(p => newMap.set(p.id, p));
+                        return Array.from(newMap.values());
+                    });
+
+                    // PASSO 2: Salva Local (Garantia)
+                    for(const p of fixed) {
+                        await db.saveProject(p);
+                    }
+
+                    alert("Importação Concluída! Os dados estão no seu dispositivo.");
                 }
             } catch(err) { alert("Erro no arquivo."); }
         };
@@ -491,7 +545,6 @@ export default function AppCloud({ userId }) {
                     onSelectReport={id=>{
                         if(id==='PRINT_RDO' || id==='PRINT_FIN'){ 
                             setActiveRepId(id); 
-                            // CORREÇÃO CRÍTICA: Aumentar delay para 2.5s para garantir que imagens carreguem no mobile
                             setTimeout(()=>window.print(), 2500); 
                             setTimeout(()=>setActiveRepId(null), 4000); 
                         }
@@ -509,3 +562,5 @@ export default function AppCloud({ userId }) {
         </div>
     );
 }
+
+
