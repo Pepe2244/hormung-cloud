@@ -50,7 +50,6 @@ const compressImg = (file) => new Promise((resolve) => {
         const img = new Image(); img.src = e.target.result;
         img.onload = () => {
             const cvs = document.createElement('canvas'); const ctx = cvs.getContext('2d');
-            // COMPRESSÃO AGRESSIVA: Reduzimos max dimension para 720 e qualidade para 0.4
             const max = 720; const scale = max/Math.max(img.width,img.height,max);
             cvs.width = img.width*scale; cvs.height = img.height*scale;
             ctx.drawImage(img,0,0,cvs.width,cvs.height);
@@ -88,27 +87,19 @@ class HybridDB {
     }
 
     async sync() {
-        // Sempre retorna o local primeiro para a interface ser rápida
         const localData = await this.getAllLocal();
-
         if (!this.userId) return localData;
 
         try {
             const res = await fetch(this.apiBase, { headers: { 'x-user-id': this.userId } });
             if (res.ok) {
                 const data = await res.json();
-
-                // Cenário 1: Nuvem vazia, mas temos dados locais (Migração)
                 if ((!data.projects || data.projects.length === 0) && localData.length > 0) {
-                    console.log("☁️ Nuvem vazia. Iniciando migração silenciosa...");
-                    this.migrateToCloud(localData); // Fire and forget
+                    console.log("☁️ Nuvem vazia. Migrando...");
+                    this.migrateToCloud(localData);
                     return localData;
                 }
-
-                // Cenário 2: Nuvem tem dados (Sincronização)
                 if (data.projects && data.projects.length > 0) {
-                    // Mescla inteligente: Se a nuvem tiver mais coisas ou coisas mais novas, vence
-                    // Simplificação: Nuvem vence.
                     await this.updateLocalCache(data.projects);
                     return data.projects;
                 }
@@ -126,8 +117,7 @@ class HybridDB {
             const saved = await this.saveToCloud(p);
             if(saved) success++; else failed++;
         }
-        console.log(`Migração: ${success} salvos, ${failed} falharam (tamanho).`);
-        if (failed > 0) alert(`Atenção: ${failed} obras não subiram para a nuvem pois são muito grandes (Muitas fotos). Elas continuam salvas APENAS neste dispositivo.`);
+        console.log(`Migração: ${success} salvos, ${failed} falharam.`);
     }
 
     async updateLocalCache(projects) {
@@ -146,14 +136,11 @@ class HybridDB {
     }
 
     async saveProject(project) {
-        // 1. GARANTIA LOCAL (Sempre salva primeiro aqui)
         await this.initLocal(); 
         await new Promise(r => {
             const tx = this.db.transaction('projects', 'readwrite');
             tx.objectStore('projects').put(project).onsuccess = r;
         });
-
-        // 2. TENTATIVA NUVEM (Se falhar, não quebra o app)
         if (this.userId) {
             this.saveToCloud(project);
         }
@@ -167,14 +154,13 @@ class HybridDB {
                 headers: { 'Content-Type': 'application/json', 'x-user-id': this.userId },
                 body: JSON.stringify({ project })
             });
-
             if (!res.ok) {
-                if(res.status === 413) console.error(`Obra ${project.name} é muito grande para o Vercel.`);
+                if(res.status === 413) console.error("Obra muito grande para Vercel.");
                 return false;
             }
             return true;
         } catch (e) {
-            console.error("Erro ao salvar na nuvem:", e);
+            console.error("Erro nuvem:", e);
             return false;
         }
     }
@@ -252,7 +238,7 @@ const PrintRDO = ({ project, report }) => {
                                     <p className="text-[10px] text-center text-gray-500">{p.name}</p>
                                 </div>
                                 <div className="photo-grid-fixed">
-                                    <{photos.map((ph, idx) => (
+                                    {photos.map((ph, idx) => (
                                         <div key={idx} className="photo-item">
                                             <div className="photo-img-container">
                                                 <img src={ph.url} loading="eager" className="max-h-full max-w-full object-contain" alt="Foto Obra" />
@@ -498,7 +484,7 @@ export default function AppCloud({ userId }) {
                 const data = JSON.parse(ev.target.result);
                 if(data.projects) {
                     const fixed = data.projects.map(p => ({...p, expenses: p.expenses||[], reports: p.reports||[]}));
-
+                    
                     // PASSO 1: Atualiza UI Imediatamente (Para você não ficar cego)
                     setProjects(prev => {
                         const newMap = new Map(prev.map(p => [p.id, p]));
@@ -510,7 +496,7 @@ export default function AppCloud({ userId }) {
                     for(const p of fixed) {
                         await db.saveProject(p);
                     }
-
+                    
                     alert("Importação Concluída! Os dados estão no seu dispositivo.");
                 }
             } catch(err) { alert("Erro no arquivo."); }
@@ -562,5 +548,3 @@ export default function AppCloud({ userId }) {
         </div>
     );
 }
-
-
